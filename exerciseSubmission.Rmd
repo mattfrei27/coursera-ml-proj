@@ -1,0 +1,90 @@
+---
+title: "Predicting Workout Quality"
+author: "Matt F"
+date: "March 16, 2016"
+output: html_document
+---
+
+#Executive Summary
+The application of machine learning to human activity prediction has been broadly applied for several years. However, fewer practioners have focused on predicting the exercise quality. A unique [data set](http://groupware.les.inf.puc-rio.br/har) makes this analysis possible. In the brief analysis that follows, I demonstrate that data from sensors placed on the human body can be used to very accurately (>98%) distinguish between dumbbell curl exercises performed with proper from less well executed dumbbell curls.
+
+#Data Preparation
+The data provided for this project was already divided into training and test sets.
+
+```{r download, echo=FALSE, warning=FALSE, message=FALSE}
+setwd('C:/Users/matt/Dropbox/Documents/Coursera/practical machine learning/Course Project')
+library(caret)
+library(doParallel)
+library(randomForest)
+
+# download.file('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-training.csv','training.csv')
+# download.file('https://d396qusza40orc.cloudfront.net/predmachlearn/pml-testing.csv','testing.csv')
+```
+
+The original data contained 160 features. To simplify the model building process, I reduced both the training and testing data to the 60 features that contained non-null values in the test data. Since the objective of this project is prediction, there is little sense in using features that do not contain useful information for the cases we're interested in predicting. Note also that a few features unlikely to have predictive value were also dropped (a row index and timestamp columns.)
+
+```{r read}
+test <- read.csv('testing.csv',na.strings=c('#DIV/0!','',' ','NA'),stringsAsFactors=FALSE)
+vars.to.keep <- colSums(is.na(test))<nrow(test)
+test <- test[,vars.to.keep]
+test.x <- test[,!(names(test) %in% c('X'))] #Drop row index
+test.x <- test.x[,-grep('timestamp',names(test.x))] #Drop timestamp columns
+test.x$user_name <- as.factor(test.x$user_name)
+
+train <- read.csv('training.csv',na.strings=c('#DIV/0!','',' ','NA'),stringsAsFactors=FALSE)
+train <- train[,vars.to.keep] #Remove columns that are all null in test data
+x <- train[,!(names(train) %in% c('classe','X'))] #Drop target column and row index
+x <- x[,-grep('timestamp',names(x))] #Drop timestamp columns
+x$user_name <- as.factor(x$user_name)
+y <- as.factor(train$classe)
+```
+
+To further reduce the number of potential features in the model, and therefore relax the computational burden of model training, I perform Principal Components Analysis (PCA) to generate a set of features that capture 95% of the variance in the numeric predictors. Before performing PCA, I employ a Box Cox tranformation to make the features more normal. Many of them were highly skewed or bimodal. Note that only 26 features are required to capture 95% of the variance in the predictors. I also include the categorical feature that captures the name of the study participant as a predictor.
+
+```{r pca}
+preProc1 <- preProcess(x[,3:55] + abs(min(x[,3:55])),method="BoxCox")
+trainBC <- predict(preProc1,x[,3:55] + abs(min(x[,3:55])))
+testBC <- predict(preProc1,test.x[3:55] + abs(min(x[,3:55])))
+
+preProc2 <- preProcess(trainBC,method="pca",thresh=.95)
+train.final.features <- cbind(predict(preProc2,trainBC),x$user_name)
+names(train.final.features)[27] <- "user_name"
+test.final.features <- cbind(predict(preProc2,testBC),test.x$user_name)
+names(test.final.features)[27] <- "user_name"
+
+preProc2
+```
+
+#Modeling
+A Random Forest Classifier was chosen to fit this data because of its high predictive accuracy, ability to capture nonlinear behavior, built in cross-validation mechanism, and ability to avoid overfitting.
+
+##Cross Validation
+The Random Forest algorithm has cross-validation built in. The algorithm trains many classification trees on random subsamples of features and bootstap subsamples of the training data. When each tree is fitted, a portion of the samples are not used for training. After each tree is trained, those "out-of-bag" samples are then classified. The out-of-bag error estimate is, therefore, a good measure for out-of-sample error.
+
+##Model Training
+I use all available cores on my computer to train the model. Note that I am constraining the number of terminal nodes and the number of trees constructed to reduce the computational burden of model fitting.
+
+```{r fitmodel, cache=TRUE}
+rm(list=c('test','test.x','testBC','train','trainBC','x','preProc1','preProc2','vars.to.keep')) #Free up memory
+cl <- makeCluster(detectCores()) #Use all available cores in parallel for model training.
+registerDoParallel(cl)
+mod.rf <- randomForest(x=train.final.features,y=y,method='rf',importance=T,maxnodes=10000,ntree=500)
+stopCluster(cl)
+```
+
+##Model Assessment
+The accuracy on the test data is 98.6% . More importantly, the estimated out of sample error rate is 1.45% (based on out-of-bag cases). My predictions for the 20 test observations are shown below along with further model assesment measures.
+
+```{r}
+mod.rf
+confusionMatrix(mod.rf$predicted,y)
+test.pred <- predict(mod.rf,test.final.features)
+test.pred
+```
+
+#R Session Details
+The following details are provided for reproducibility.
+
+```{r}
+sessionInfo()
+```
